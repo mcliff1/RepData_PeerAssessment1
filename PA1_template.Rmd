@@ -1,25 +1,179 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
+author: Matt Cliff
+date: "`r format(Sys.time(), '%B, %d %Y')`"
 output: 
   html_document:
     keep_md: true
 ---
 
+## Initialization
+
+Load the required libraries: `lubridate` for date parsing, `dplyr` and `reshape2` to tidy the data, and `ggplot`, `gridExtra` and `scale` for some graphs.
+```{r loadlibs, message=FALSE, warning=FALSE}
+require(lubridate)
+require(dplyr)
+require(ggplot2)
+require(reshape2)    # for dcast 
+require(scales)
+require(gridExtra)   # for panel plot
+```
+
 
 ## Loading and preprocessing the data
 
+Next Load the activity data out of the zip file provided in this directory.
+We then convert steps to numeric and parse the date.
 
+```{r loaddata, warning=FALSE}
+activity <- read.table(unz("./activity.zip", "activity.csv"), header=TRUE, sep=",", na.strings="<NA>")
+
+
+activity$steps <- as.numeric(as.character(activity$steps))
+activity$date <- ymd(activity$date)
+```
 
 ## What is mean total number of steps taken per day?
 
+In order to calucate the mean total per day, we first make a new object to pull the data into a daily data frame
+```{r computedaily}
+daily <- activity %>% group_by(date) %>% summarize(steps=sum(steps))
+
+dailyMean <- mean(daily$steps, na.rm=TRUE)
+dailyMedian <- median(daily$steps, na.rm=TRUE)
+```
+
+The daily mean is `r format(dailyMean, digits=6)` and the daily median is `r format(dailyMedian, digits=5)`.
+
+```{r warning=FALSE} 
+ggplot(data=daily, aes(daily$steps)) + 
+    geom_histogram(binwidth=1200) + 
+    theme_bw() + 
+    labs(x="Number of Steps in a Day", y="Occurences") +
+    ggtitle("Histogram of the Total Number of Steps taken each Day") +
+    scale_y_continuous(breaks=c(2,4,6,8))
+
+```
 
 
 ## What is the average daily activity pattern?
 
+To identify the average daily pattern we collapse all the date to a single 24-hour period.
+
+```{r averageday}
+aday <- activity %>% 
+    group_by(interval) %>% 
+    summarize(stepMean=mean(steps, na.rm=TRUE), stepStd=sd(steps, na.rm=TRUE))
+
+# sets the interval to a POSIX time object
+aday$intervalTime <- as.POSIXct(strptime(sprintf("%04d", aday$interval), format="%H%M", tz="UTC"))
+```
+Produces this view 
+
+
+```{r warning=FALSE} 
+ggplot(aday, aes(intervalTime, stepMean)) + 
+    geom_line() + 
+    theme_bw() + 
+    labs(x="Time of Day", y="Number of Steps") +
+    ggtitle("Time series plot of Average Number of Steps in 5 Minute Increments") +
+    scale_x_datetime(labels=date_format("%H:%M"))
+
+```
+
+### Which 5-minute increment is the most active?
+To identify the most active time, we can filter where the daily activity shows max mean of step count.
+```{r mostactive}
+filter(aday, stepMean == max(stepMean))
+```
+This shows between 8:35A and 8:40A is the most active time interval with a little over 206 steps on average. I wonder if this indivudal uses public transportation to get to work or school each day.
 
 
 ## Imputing missing values
 
+First let's check to see if there is any missing data?
+```{r missingdatacheck}
+missingRows <- is.na(activity$steps)
+sum(missingRows)
+```
 
+We will now make a new data frame called imputed for the activity data filled in 
+using the mean for that increment
+
+```{r warning=FALSE}
+# go ahead and use the interval mean (rounded down) to plug in 
+aday$step2 <- floor(aday$stepMean)
+# add the rounded step (as step2) so we can more easily replace it on the missing Rows
+imputed <- merge(activity, aday[,c("interval", "step2")], by="interval") %>%
+    arrange(date,interval)
+missingRows <- is.na(imputed$steps)
+imputed[missingRows, "steps"] <- imputed[missingRows, ]$step2
+```
+
+Now that we've filled in the missing data, let's again check the mean and median values on the imputed data
+
+```{r computedaily2}
+dailyImputed <- imputed %>% 
+    group_by(date) %>% 
+    summarize(steps=sum(steps))
+
+dailyImputedMean <- mean(dailyImputed$steps, na.rm=TRUE)
+dailyImputedMedian <- median(dailyImputed$steps, na.rm=TRUE)
+```
+
+The new daily mean is `r format(dailyImputedMean, digits=6)` and the updated daily median is `r format(dailyImputedMedian, digits=5)`.  Note the median dropped by about 4 while the mean dropped by almost 90; this happened by ADDING some guessed number of steps for the missing data;  in fact we added a total of
+
+```{r totalcounts}
+sum(imputed$steps, na.rm=TRUE) - sum(activity$steps, na.rm=TRUE)
+```
+
+The totals are higher, yet the averages are lower. This is because we are now averageing over all those intervals we did not have any numbers (2304 out of 17568) entries were N/A.
+
+Let's see what that histogram looks like with the imputed daily data
+
+```{r warning=FALSE} 
+ggplot(data=dailyImputed, aes(dailyImputed$steps)) + 
+    geom_histogram(binwidth=1200) + 
+    theme_bw() + 
+    labs(x="Number of Steps in a Day", y="Occurences") +
+    ggtitle("Histogram of total number of steps taken each day (Imputed Data)") +
+    scale_y_continuous(breaks=seq(from=2,to=20,by=2))
+```
+
+Looking at this, I'm not sure this was the best choice, as it reinforces the most common data, but I think we can complete the report with this choice of filling in blank data and leave that for another discussion.
 
 ## Are there differences in activity patterns between weekdays and weekends?
+
+To see if the weekends or weekdays show different activity patterns, let's add that factor into the daily chart.
+
+```{r addweekendfactor}
+
+activity$dayOfWeek <- factor(weekdays(activity$date) %in% c("Saturday", "Sunday"),
+                             levels=c(TRUE,FALSE), labels=c("weekend", "weekday"))
+ 
+# add a weekday/weekend factor to the aday plot
+adayWd <- activity %>% 
+            group_by(interval, dayOfWeek) %>% 
+            summarize(stepMean=mean(steps, na.rm=TRUE))
+    
+adayWd <- dcast(adayWd, interval ~ dayOfWeek, value.var = "stepMean")
+adayWd$interval <- strptime(sprintf("%04d", adayWd$interval), format="%H%M", tz="UTC")
+```
+
+And Let's see a plot 
+
+```{r warning=FALSE}
+g1 <- ggplot(adayWd, aes(interval)) +
+        geom_line(aes(y=weekday)) +
+        scale_x_datetime(labels=date_format("%H:%M")) +
+        theme_bw()
+
+g2 <- ggplot(adayWd, aes(interval)) +
+    geom_line(aes(y=weekend)) +
+    scale_x_datetime(labels=date_format("%H:%M")) +
+    theme_bw()
+
+grid.arrange(g1,g2,nrow=2)
+```
+
+The strong activity on weekdays during the peak time would indicate the indivdual has an active routine that is more pronounced on weekdays than weekends, this could be a morning jog or a commute.  There is also an interesting spike on the weekends around 10P or so.
